@@ -24,7 +24,7 @@ async def start_web_server():
     print(f" Web Server Bypass Started on port {port}")
 
 # ==============================================================================
-# [유튜브 오디오 스트리밍 설정 (yt-dlp)]
+# [유튜브 오디오 스트리밍 설정 (yt-dlp) - 차단 우회 스푸핑 추가]
 # ==============================================================================
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -35,7 +35,14 @@ YTDL_OPTIONS = {
     'quiet': True,
     'no_warnings': True,
     'default_search': 'auto',
-    'source_address': '0.0.0.0'
+    'source_address': '0.0.0.0',
+    # 🌟 [클라우드 IP 차단 우회 핵심 옵션] 유튜브에게 모바일 앱(iOS/Android)인 척 속입니다.
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['ios', 'android'],
+            'skip': ['dash', 'hls']
+        }
+    }
 }
 
 FFMPEG_OPTIONS = {
@@ -62,8 +69,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
         filename = data['url'] if stream else ytdl.prepare_filename(data)
         
-        # 🌟 [렌더 우회 핵심 가동 옵션] 
-        # 서버 인프라 설정을 건드리지 않고, 파이썬 내부에서 ffmpeg 실행 경로를 강제로 주입합니다.
+        # static-ffmpeg 연동 경로 지정
         from static_ffmpeg import run
         ffmpeg_bin, _ = run.get_or_fetch_platform_executables_else_raise()
         
@@ -125,7 +131,8 @@ async def play(interaction: discord.Interaction, url: str):
     try:
         player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
     except Exception as e:
-        print(f"재생 에러 로그: {e}")
+        # 🌟 진짜 에러 원인이 무엇인지 렌더 로그창에 상세하게 출력하도록 보강했습니다.
+        print(f"⚠️ [재생 에러 상세 로그]: {e}")
         await interaction.followup.send("❌ 음악 정보를 불러오는 중 에러가 발생했습니다. URL을 다시 확인해 주세요.")
         return
 
