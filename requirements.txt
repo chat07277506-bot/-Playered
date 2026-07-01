@@ -1,3 +1,4 @@
 discord.py>=2.0.0
 aiohttp
-yt-dlp>=2025.1.15
+yt-dlp
+static-ffmpeg
