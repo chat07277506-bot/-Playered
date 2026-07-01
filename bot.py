@@ -9,7 +9,6 @@ import os
 
 # ==============================================================================
 # [랜더 무료 웹 서비스 우회용 미니 웹 서버]
-# 10분 동안 외부 포트 응답이 없으면 서버가 강제 종료(Timeout)되는 것을 방지합니다.
 # ==============================================================================
 async def handle(request):
     return web.Response(text="Playered Bot is Running Active!")
@@ -19,7 +18,6 @@ async def start_web_server():
     app.router.add_get('/', handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    # 렌더(Render)가 자동으로 부여하는 내부 포트 10000번을 기본으로 사용합니다.
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
@@ -63,7 +61,13 @@ class YTDLSource(discord.PCMVolumeTransformer):
             data = data['entries'][0]
 
         filename = data['url'] if stream else ytdl.prepare_filename(data)
-        return cls(discord.FFmpegPCMAudio(filename, **FFMPEG_OPTIONS), data=data)
+        
+        # 🌟 [렌더 우회 핵심 가동 옵션] 
+        # 서버 인프라 설정을 건드리지 않고, 파이썬 내부에서 ffmpeg 실행 경로를 강제로 주입합니다.
+        from static_ffmpeg import run
+        ffmpeg_bin, _ = run.get_or_fetch_platform_executables_else_raise()
+        
+        return cls(discord.FFmpegPCMAudio(filename, executable=ffmpeg_bin, **FFMPEG_OPTIONS), data=data)
 
 # ==============================================================================
 # [Playered 메인 봇 클래스]
@@ -76,14 +80,10 @@ class PlayeredBot(commands.Bot):
         intents.voice_states = True
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
-        
-        # 각 서버(Guild)별 음악 대기열 관리 딕셔너리
         self.music_queues = {}
 
     async def setup_hook(self):
-        # 웹서버 백그라운드 구동 시작
         self.loop.create_task(start_web_server())
-        # 슬래시 명령어 동기화
         await self.tree.sync()
 
     async def on_ready(self):
@@ -92,14 +92,12 @@ class PlayeredBot(commands.Bot):
 
 bot = PlayeredBot()
 
-# 재생목록 순차 재생을 위한 헬퍼 함수
 def play_next(interaction: discord.Interaction, guild_id: int):
     if guild_id in bot.music_queues and bot.music_queues[guild_id]:
         next_song = bot.music_queues[guild_id].pop(0)
         vc = interaction.guild.voice_client
         if vc and vc.is_connected():
             vc.play(next_song['source'], after=lambda e: play_next(interaction, guild_id))
-            # 다음 곡 재생 알림은 대화방에 텍스트 전송
             bot.loop.create_task(interaction.channel.send(f"🎵 대기열의 다음 곡을 재생합니다: **{next_song['title']}**"))
     else:
         print("대기열이 비어있습니다.")
@@ -110,7 +108,7 @@ def play_next(interaction: discord.Interaction, guild_id: int):
 @bot.tree.command(name="재생", description="유튜브 주소로 음악을 재생하거나 대기열에 추가합니다. (최대 10곡)")
 @app_commands.describe(url="유튜브 영상 링크(URL)를 입력해주세요.")
 async def play(interaction: discord.Interaction, url: str):
-    await interaction.response.defer(ephemeral=False) # 3초 타임아웃 선제 방지
+    await interaction.response.defer(ephemeral=False)
     
     if not interaction.user.voice:
         await interaction.followup.send("❌ 먼저 음성 채널에 입장한 뒤 명령어를 사용해 주세요!")
@@ -120,7 +118,6 @@ async def play(interaction: discord.Interaction, url: str):
     if guild_id not in bot.music_queues:
         bot.music_queues[guild_id] = []
 
-    # 대기열 10개 제한 확인
     if len(bot.music_queues[guild_id]) >= 10:
         await interaction.followup.send("⚠️ 대기열이 가득 찼습니다! (최대 10곡까지만 쌓아둘 수 있습니다.)")
         return
@@ -128,6 +125,7 @@ async def play(interaction: discord.Interaction, url: str):
     try:
         player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
     except Exception as e:
+        print(f"재생 에러 로그: {e}")
         await interaction.followup.send("❌ 음악 정보를 불러오는 중 에러가 발생했습니다. URL을 다시 확인해 주세요.")
         return
 
@@ -136,7 +134,6 @@ async def play(interaction: discord.Interaction, url: str):
         vc = await interaction.user.voice.channel.connect()
 
     if vc.is_playing():
-        # 이미 재생 중이면 대기열(큐)에 제목과 소스를 저장
         bot.music_queues[guild_id].append({'title': player.title, 'source': player})
         await interaction.followup.send(f" 대기열에 추가되었습니다: **{player.title}** (현재 대기: {len(bot.music_queues[guild_id])}곡)")
     else:
@@ -147,8 +144,8 @@ async def play(interaction: discord.Interaction, url: str):
 async def stop(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
-        vc.stop() # stop()이 호출되면 after 람다에 의해 play_next가 자동으로 실행됩니다.
-        await interaction.response.send_message("⏹️ 현재 재생 중인 곡을 정지했습니다. (다음 곡이 있다면 이어서 재생됩니다.)")
+        vc.stop()
+        await interaction.response.send_message("⏹️ 현재 재생 중인 곡을 정지했습니다.")
     else:
         await interaction.response.send_message("❌ 현재 재생 중인 음악이 없습니다.")
 
@@ -174,7 +171,7 @@ async def remove_queue(interaction: discord.Interaction, 번호: int):
         return
 
     if 번호 < 1 or 번호 > len(bot.music_queues[guild_id]):
-        await interaction.response.send_message(f"❌ 올바른 번호가 아닙니다. (1부터 {len(bot.music_queues[guild_id])} 사이로 입력해 주세요.)")
+        await interaction.response.send_message(f"❌ 올바른 번호가 아닙니다.")
         return
 
     removed_song = bot.music_queues[guild_id].pop(번호 - 1)
@@ -190,14 +187,12 @@ async def match_team(interaction: discord.Interaction, 팀갯수: int, 참여유
         await interaction.response.send_message("❌ 팀은 최소 2개 이상으로만 짤 수 있습니다.")
         return
 
-    # 띄어쓰기 기준으로 유저 파싱하여 리스트업
     user_list = [user.strip() for user in 참여유저.split(" ") if user.strip()]
     if len(user_list) < 팀갯수:
         await interaction.response.send_message("❌ 참여 유저 수가 설정한 팀의 개수보다 적습니다!")
         return
 
-    random.shuffle(user_list) # 리스트 무작위 셔플
-    
+    random.shuffle(user_list)
     teams = {i: [] for i in range(1, 팀갯수 + 1)}
     for idx, user in enumerate(user_list):
         team_num = (idx % 팀갯수) + 1
@@ -224,12 +219,8 @@ async def flip_coin(interaction: discord.Interaction):
     result = random.choice(["🪙 앞면 (Head)", "🪙 뒷면 (Tail)"])
     await interaction.response.send_message(f" Toss! 동전을 던진 결과...\n👉 **{result}** 입니다!")
 
-# ==============================================================================
-# [봇 실행을 위한 토큰 로드 환경변수 세팅]
-# 깃허브 보안을 위해 랜더(Render)의 Environment Variables에 DISCORD_TOKEN을 기입해두어야 합니다.
-# ==============================================================================
 TOKEN = os.environ.get("DISCORD_TOKEN")
 if TOKEN:
     bot.run(TOKEN)
 else:
-    print("❌ 환경 변수 'DISCORD_TOKEN'을 찾을 수 없습니다. 렌더 환경 설정을 확인하세요.")
+    print("❌ 환경 변수 'DISCORD_TOKEN'을 찾을 수 없습니다.")
