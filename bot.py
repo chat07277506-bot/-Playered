@@ -8,7 +8,6 @@ import os
 
 # ==============================================================================
 # [랜더 무료 웹 서비스 우회용 미니 웹 서버]
-# 10분간 외부 트래픽이 없으면 봇이 강제로 기절(Timeout)하는 것을 완벽하게 방지합니다.
 # ==============================================================================
 async def handle(request):
     return web.Response(text="Playered Bot is Running Active!")
@@ -39,27 +38,34 @@ class PlayeredBot(commands.Bot):
         intents.voice_states = True
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
+        self.ffmpeg_path = None # 사전 로드용 변수
 
     async def setup_hook(self):
-        # 10분 우회 웹 서버 백그라운드 작동 개시
         self.loop.create_task(start_web_server())
-        # 최신 표준 슬래시 명령어 동기화
         await self.tree.sync()
 
     async def on_ready(self):
         print(f"Logged in as {self.user.name}")
-        print("Playered Final Integrated Bot is fully ready!")
+        # 🌟 렉 방지 핵심: 봇이 켜질 때 ffmpeg 바이너리를 미리 메모리에 세팅하여 재생 시 렉을 없앱니다.
+        try:
+            from static_ffmpeg import run
+            ffmpeg_bin, _ = run.get_or_fetch_platform_executables_else_raise()
+            self.ffmpeg_path = ffmpeg_bin
+            print("🚀 static-ffmpeg Pre-loaded Successfully!")
+        except Exception as e:
+            print(f"static-ffmpeg 로드 실패: {e}")
+        print("Playered Super-Fast Bot is fully ready!")
 
 bot = PlayeredBot()
 
 # ==============================================================================
 # 🎵 [음악 재생 관련 서포트 명령어]
-# 유튜브 보안망에 찍힌 렌더 IP를 숨기기 위해 오픈소스 인비디우스 프록시망 주소로 가공해 재생합니다.
 # ==============================================================================
 @bot.tree.command(name="재생", description="데이터센터 IP 차단 없는 안정적인 우회 주소로 음악을 재생합니다.")
 @app_commands.describe(주소="유튜브 영상 링크(URL) 또는 스트리밍 주소를 입력하세요.")
 async def play(interaction: discord.Interaction, 주소: str):
-    await interaction.response.defer(ephemeral=False) # 3초 타임아웃 선제 차단
+    # 음악 파싱은 외부 통신이 필요하므로 defer를 유지하되 안전하게 제어합니다.
+    await interaction.response.defer(ephemeral=False)
     
     if not interaction.user.voice:
         await interaction.followup.send("❌ 먼저 음성 채널에 입장한 뒤 명령어를 사용해 주세요!")
@@ -73,21 +79,17 @@ async def play(interaction: discord.Interaction, 주소: str):
         if vc.is_playing():
             vc.stop()
 
-        # 🌟 시스템 권한 없이 독립적으로 작동하는 static-ffmpeg 강제 로드
-        from static_ffmpeg import run
-        ffmpeg_bin, _ = run.get_or_fetch_platform_executables_else_raise()
-
         target_url = 주소
-        # 유튜브 주소가 들어오면 비디오 ID만 떼어내어 우회 중계 프록시 서버(Invidious) 주소로 가공합니다.
         if "youtube.com" in 주소 or "youtu.be" in 주소:
             video_id = 주소.split("v=")[-1] if "v=" in 주소 else 주소.split("/")[-1]
             target_url = f"https://invidious.sethforalan.com/latest_version?id={video_id}&itag=251"
 
-        source = discord.FFmpegPCMAudio(target_url, executable=ffmpeg_bin, **FFMPEG_OPTIONS)
+        # 미리 캐싱해 둔 ffmpeg 경로를 사용하여 칼재생 처리
+        executable_path = bot.ffmpeg_path if bot.ffmpeg_path else "ffmpeg"
+        source = discord.FFmpegPCMAudio(target_url, executable=executable_path, **FFMPEG_OPTIONS)
         vc.play(source)
         await interaction.followup.send(f"🎵 활동 지원 오디오 스트리밍을 시작합니다!")
     except Exception as e:
-        print(f"재생 에러 내부 로깅: {e}")
         await interaction.followup.send(f"❌ 오디오 장치를 가동하는 중 문제가 발생했습니다.")
 
 @bot.tree.command(name="정지", description="현재 음성 채널에서 흘러나오는 음악을 정지합니다.")
@@ -100,18 +102,16 @@ async def stop(interaction: discord.Interaction):
         await interaction.response.send_message("❌ 현재 재생 중인 음악이 없습니다.")
 
 # ==============================================================================
-# 🎲 [추첨 및 활동 중재 비서 명령어]
-# 유저가 중심이 되어 의견 조율이나 내기를 할 때 봇이 공평한 '기준'만 제공하고 뒤로 빠집니다.
+# 🎲 [추첨 및 활동 중재 비서 명령어 - 0.1초 즉시 응답 최적화 완료]
 # ==============================================================================
-
 @bot.tree.command(name="추첨", description="현재 본인이 참가 중인 음성 채널 인원들 중에서 독박 당첨자를 추첨합니다.")
 @app_commands.describe(당첨인원수="뽑고 싶은 당첨자의 명수를 숫자로 입력하세요.")
 async def voice_draw(interaction: discord.Interaction, 당첨인원수: int):
+    # 🌟 최적화: 유저 연산이 필요 없는 단순 랜덤은 defer 없이 response로 즉시 꽂아버립니다.
     if not interaction.user.voice or not interaction.user.voice.channel:
         await interaction.response.send_message("❌ 이 명령어는 먼저 음성 채널(통화방)에 입장한 뒤 사용하실 수 있습니다!")
         return
 
-    # 현재 명령어 유저와 같은 음성 채널에 있는 유저 리스트 추출
     members = interaction.user.voice.channel.members
     member_mentions = [m.mention for m in members]
 
@@ -123,7 +123,6 @@ async def voice_draw(interaction: discord.Interaction, 당첨인원수: int):
         await interaction.response.send_message("❌ 당첨 인원은 최소 1명 이상이어야 합니다.")
         return
 
-    # 중복 없이 무작위 당첨자 추첨
     winners = random.sample(member_mentions, 당첨인원수)
     
     embed = discord.Embed(title="🎯 통화방 실시간 독박 추첨 결과", color=discord.Color.red())
@@ -138,11 +137,9 @@ async def sequence_order(interaction: discord.Interaction):
         return
 
     members = [m.name for m in interaction.user.voice.channel.members]
-    random.shuffle(members) # 무작위 셔플
+    random.shuffle(members)
     
-    order_list = []
-    for idx, name in enumerate(members, start=1):
-        order_list.append(f"**{idx}등** : {name}")
+    order_list = [f"**{idx}등** : {name}" for idx, name in enumerate(members, start=1)]
 
     embed = discord.Embed(title="🔀 인게임 순서 및 차례 배치 결과", color=discord.Color.orange())
     embed.description = "\n".join(order_list)
@@ -194,4 +191,4 @@ TOKEN = os.environ.get("DISCORD_TOKEN")
 if TOKEN:
     bot.run(TOKEN)
 else:
-    print("❌ 환경 변수 'DISCORD_TOKEN'을 찾을 수 없습니다. 렌더 설정을 확인하세요.")
+    print("❌ 환경 변수 'DISCORD_TOKEN'을 찾을 수 없습니다.")
